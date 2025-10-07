@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>介護・障害支援ナビ（地域対応）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: sans-serif; padding: 2rem; background: #f4f4f4; }
+    .card { background: white; padding: 1.5rem; margin-bottom: 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    button { margin: 0.5rem; padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { border: 1px solid #ccc; padding: 0.6rem; text-align: left; }
+    th { background: #eee; }
+    .highlight { background: #fff9c4; font-weight: bold; }
+    input[type="number"] { width: 100%; padding: 0.5rem; font-size: 1rem; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+
+<h1>介護・障害支援ナビ（地域単価対応）</h1>
+
+<div id="question-area" class="card"></div>
+
+<div id="disease-search-area" class="card" style="display:none;">
+  <h3>別表7対象疾患（検索可）</h3>
+  <input type="text" id="disease-search" placeholder="疾患名を入力">
+  <table id="disease-table">
+    <thead><tr><th>疾患名</th><th>備考</th></tr></thead>
+    <tbody>
+      <tr><td>筋萎縮性側索硬化症（ALS）</td><td>特定疾病</td></tr>
+      <tr><td>末期の悪性腫瘍（がん）</td><td>緩和ケア対象</td></tr>
+      <tr><td>多系統萎縮症</td><td>パーキンソン症候群</td></tr>
+      <tr><td>人工呼吸器使用中</td><td>医療的ケア</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="result-area" class="card" style="display:none;"></div>
+
+<div id="usage-input" class="card" style="display:none;">
+  <h3>📊 今月すでに使った単位数を入力</h3>
+  <input type="number" id="used-units" placeholder="例：10000">
+  <div id="usage-result" style="margin-top:1rem;"></div>
+</div>
+
+<script>
+let answers = {};
+let step = 1;
+
+// 各要介護度の支給限度単位
+const unitTable = {
+  support1: 5216,
+  support2: 10732,
+  care1: 16765,
+  care2: 19735,
+  care3: 27048,
+  care4: 30938,
+  care5: 36217
+};
+
+// 所得区分ごとの負担割合
+const incomeToCopay = {
+  low: 0.1,
+  mid: 0.2,
+  high: 0.3,
+  unknown: null
+};
+
+// 質問一覧
+const questions = {
+  1: {
+    text: "年齢は？",
+    options: {
+      "65歳以上": () => { answers.age = "65+"; step++; showQuestion(); },
+      "65歳未満": () => { answers.age = "under65"; step++; showQuestion(); }
+    }
+  },
+  2: {
+    text: "要介護認定を受けていますか？",
+    options: {
+      "受けている": () => { answers.certified = true; step++; showQuestion(); },
+      "受けていない": () => { answers.certified = false; step = 4; showQuestion(); }
+    }
+  },
+  3: {
+    text: "要介護度は？",
+    options: {
+      "要支援1": () => { answers.careLevel = "support1"; step++; showQuestion(); },
+      "要支援2": () => { answers.careLevel = "support2"; step++; showQuestion(); },
+      "要介護1": () => { answers.careLevel = "care1"; step++; showQuestion(); },
+      "要介護2": () => { answers.careLevel = "care2"; step++; showQuestion(); },
+      "要介護3": () => { answers.careLevel = "care3"; step++; showQuestion(); },
+      "要介護4": () => { answers.careLevel = "care4"; step++; showQuestion(); },
+      "要介護5": () => { answers.careLevel = "care5"; step++; showQuestion(); }
+    }
+  },
+  4: {
+    text: "年収（目安）を選んでください",
+    options: {
+      "非課税世帯（生活保護含む）": () => { answers.copay = incomeToCopay.low; step++; showQuestion(); },
+      "年収約280万円未満": () => { answers.copay = incomeToCopay.low; step++; showQuestion(); },
+      "年収280万〜340万円": () => { answers.copay = incomeToCopay.mid; step++; showQuestion(); },
+      "年収340万円以上": () => { answers.copay = incomeToCopay.high; step++; showQuestion(); },
+      "わからない / 不明": () => { answers.copay = incomeToCopay.unknown; step++; showQuestion(); }
+    }
+  },
+  5: {
+    text: "医師から訪問看護が必要と言われていますか？",
+    options: {
+      "はい": () => { answers.needNurse = true; step++; showQuestion(); },
+      "いいえ": () => { answers.needNurse = false; step++; showQuestion(); }
+    }
+  },
+  6: {
+    text: "別表7に該当する疾患がありますか？",
+    options: {
+      "ある": () => { answers.specialDisease = true; step++; showQuestion(); },
+      "ない": () => { answers.specialDisease = false; step++; showQuestion(); }
+    }
+  },
+  7: {
+    text: "障害者手帳を持っていますか？",
+    options: {
+      "ある": () => { answers.disabled = true; step++; showQuestion(); },
+      "ない": () => { answers.disabled = false; step++; showQuestion(); }
+    }
+  },
+  8: {
+    text: "お住まいの地域は？",
+    options: {
+      "春日部市（標準10.00円）": () => { answers.region = "kasukabe"; answers.unitPrice = 10.00; showResult(); },
+      "東京23区など（10.14円）": () => { answers.region = "tokyo"; answers.unitPrice = 10.14; showResult(); },
+      "北海道の一部（9.94円）": () => { answers.region = "hokkaido"; answers.unitPrice = 9.94; showResult(); },
+      "その他 / 不明": () => { answers.region = "other"; answers.unitPrice = 10.00; showResult(); }
+    }
+  }
+};
+
+function showQuestion() {
+  const area = document.getElementById("question-area");
+  const diseaseArea = document.getElementById("disease-search-area");
+  const q = questions[step];
+  if (!q) return;
+
+  let html = `<p><strong>Q${step}. ${q.text}</strong></p>`;
+  for (let label in q.options) {
+    html += `<button onclick="questions[${step}].options['${label}']()">${label}</button>`;
+  }
+  area.innerHTML = html;
+  diseaseArea.style.display = (step === 6) ? "block" : "none";
+}
+
+function showResult() {
+  const area = document.getElementById("question-area");
+  const result = document.getElementById("result-area");
+  const usageInput = document.getElementById("usage-input");
+  const usageResult = document.getElementById("usage-result");
+
+  area.style.display = "none";
+  result.style.display = "block";
+  usageInput.style.display = "block";
+
+  const level = answers.careLevel;
+  const copay = answers.copay;
+  const unitPrice = answers.unitPrice || 10.00;
+  const unitLimit = unitTable[level] || 0;
+  const yen = unitLimit * unitPrice;
+  const userPays = (copay != null) ? yen * copay : null;
+
+  let html = `<h2>📝 判定結果</h2>`;
+  if (unitLimit > 0) {
+    html += `<p><strong>支給限度単位:</strong> ${unitLimit}単位／月</p>`;
+    html += `<p><strong>換算額:</strong> ${yen.toLocaleString()}円（@${unitPrice.toFixed(2)}円）</p>`;
+    html += (copay != null)
+      ? `<p><strong>自己負担 ${copay * 100}%:</strong> ${userPays.toLocaleString()}円／月</p>`
+      : `<p><strong>自己負担割合:</strong> 不明のため金額計算不可</p>`;
+  } else {
+    html += `<p>介護認定なし or 要支援未満のため、単位表示なし</p>`;
+  }
+
+  result.innerHTML = html;
+
+  // サービス一覧
+  const services = [
+    { name: "訪問介護", condition: answers.careLevel !== undefined, detail: "要介護・要支援認定あり", note: "生活援助・身体介護" },
+    { name: "訪問看護", condition: answers.needNurse || answers.specialDisease, detail: "医師の指示 or 特定疾患", note: "介護/医療保険" },
+    { name: "訪問入浴介護", condition: ["care2","care3","care4","care5"].includes(answers.careLevel), detail: "要介護2以上", note: "ヘルパー+看護職" },
+    { name: "定期巡回・随時対応型", condition: ["care3","care4","care5"].includes(answers.careLevel), detail: "要介護3以上", note: "24時間対応" },
+    { name: "重度訪問介護（障害）", condition: answers.disabled === true, detail: "障害者手帳＋医的ケアなど", note: "常時介護/医ケア含む" },
+    { name: "同行援護", condition: answers.disabled === true, detail: "視覚障害＋手帳等", note: "外出支援" },
+    { name: "行動援護", condition: answers.disabled === true, detail: "知的/精神＋行動障害", note: "外出/危機対応支援" },
+    { name: "居宅介護（ホームヘルプ）", condition: answers.disabled === true, detail: "障害者手帳所持", note: "生活援助・身体介護" },
+    { name: "自費サービス", condition: true, detail: "条件なし", note: "全額自己負担" }
+  ];
+
+  let tableHTML = `
+    <div class='card'>
+      <h3>📋 利用可能な訪問サービス一覧</h3>
+      <table>
+        <thead><tr><th>サービス名</th><th>利用条件</th><th>補足</th></tr></thead><tbody>
+  `;
+
+  services.forEach(s => {
+    const highlight = s.condition ? "highlight" : "";
+    tableHTML += `<tr class='${highlight}'><td>${s.name}</td><td>${s.detail}</td><td>${s.note}</td></tr>`;
+  });
+
+  tableHTML += `</tbody></table></div>`;
+  result.innerHTML += tableHTML;
+
+  const input = document.getElementById("used-units");
+  input.value = "";
+  input.addEventListener("input", () => {
+    const used = parseInt(input.value);
+    if (isNaN(used) || unitLimit === 0) return usageResult.innerHTML = "";
+    const remain = unitLimit - used;
+    const remainYen = remain * unitPrice;
+    const remainPay = (copay != null) ? remainYen * copay : null;
+    usageResult.innerHTML = `
+      <p>残り単位：${remain}単位</p>
+      <p>金額換算：${remainYen.toLocaleString()}円</p>
+      <p>自己負担：${remainPay != null ? remainPay.toLocaleString() + "円" : "不明"}</p>
+    `;
+  });
+}
+
+// ページ読み込み時に質問開始
+document.addEventListener("DOMContentLoaded", () => {
+  const search = document.getElementById("disease-search");
+  if (search) {
+    search.addEventListener("input", () => {
+      const val = search.value.toLowerCase();
+      const rows = document.querySelectorAll("#disease-table tbody tr");
+      rows.forEach(r => {
+        const text = r.innerText.toLowerCase();
+        r.style.display = text.includes(val) ? "" : "none";
+      });
+    });
+  }
+  showQuestion();
+});
+</script>
+</body>
+</html>
+
+
